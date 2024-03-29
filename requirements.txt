@@ -1,2 +1,4 @@
+torch
+pillow 
 streamlit
 surya-ocr
