@@ -1,0 +1,154 @@
+from PIL import Image
+import tempfile
+import os
+import pandas as pd
+from surya.ocr import run_ocr
+from surya.input.load import load_from_file
+from surya.input.langs import replace_lang_with_code, get_unique_langs
+from surya.model.detection.segformer import load_model as load_detection_model, load_processor as load_detection_processor
+from surya.model.recognition.model import load_model as load_recognition_model
+from surya.model.recognition.processor import load_processor as load_recognition_processor
+from surya.model.recognition.tokenizer import _tokenize
+from PyPDF2 import PdfReader
+import cassio
+from langchain_community.llms import HuggingFaceHub
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+from langchain.vectorstores.cassandra import Cassandra
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.indexes.vectorstore import VectorStoreIndexWrapper
+
+
+
+# Function to perform OCR on an image
+def perform_ocr_image(image_path):
+    # Open the image
+    image = Image.open(image_path)
+    # Define the language(s) for OCR
+    langs = ["en"]  # English language
+    # Load detection model and processor
+    det_processor, det_model = load_detection_processor(), load_detection_model()
+    # Load recognition model and processor
+    rec_model, rec_processor = load_recognition_model(), load_recognition_processor()
+    # Run OCR on the image
+    predictions = run_ocr([image], [langs], det_model, det_processor, rec_model, rec_processor)
+    # Extract text from predictions
+    data = []
+    for txt in predictions:
+        for txt_line in txt.text_lines:
+            data.append(txt_line.text)
+    return data
+
+# Function to perform OCR on a PDF
+def perform_ocr_pdf(pdf_path):
+    # Load images from PDF
+    images, _ = load_from_file(pdf_path, 1, 0)
+    # Define the language(s) for OCR
+    langs = ["en"]  # English language
+    # Replace language names with language codes
+    replace_lang_with_code(langs)
+    # Determine languages for each image
+    image_langs = [langs] * len(images)
+    # Load detection processor
+    det_processor = load_detection_processor()
+    # Load detection model
+    det_model = load_detection_model()
+    # Tokenize language information
+    _, lang_tokens = _tokenize("", get_unique_langs(image_langs))
+    # Load recognition model with specified languages
+    rec_model = load_recognition_model(langs=lang_tokens)
+    # Load recognition processor
+    rec_processor = load_recognition_processor()
+    # Run OCR on each image
+    predictions_by_image = run_ocr(images, image_langs, det_model, det_processor, rec_model, rec_processor)
+    # Extract text from predictions
+    data = []
+    for txt in predictions_by_image:
+        for txt_line in txt.text_lines:
+            data.append(txt_line.text)
+    return data
+
+
+# Main part of the code to handle user input and call OCR functions
+file_path = input("Enter the file path: ")
+txt = ' '
+# Check if the provided file path exists
+if os.path.isfile(file_path):
+    # Determine the type of file and perform OCR accordingly
+    if file_path.lower().endswith(('jpg', 'jpeg', 'png')):
+        # Perform OCR on image
+        data = perform_ocr_image(file_path)
+        print("""
+        
+        
+        
+        """)
+        print("------------------OCR Result---------------------------")
+        # Print OCR result
+        for text in data:
+          txt += txt
+          print(text)
+    elif file_path.lower().endswith('pdf'):
+        # Perform OCR on PDF
+        data = perform_ocr_pdf(file_path)
+        print("""
+        
+        
+        
+        """)
+        print("------------------OCR Result---------------------------")
+        # Print OCR result
+        for text in data:
+            print(text)
+    else:
+        print("Unsupported file format. Please upload an image (jpg, jpeg, png) or a PDF file.")
+else:
+    print("Invalid file path. Please provide a valid file path.")
+
+
+
+def process_pdf_and_search(pdf_file, query_txt):
+    raw_txt = ""
+    pdf = PdfReader(pdf_file)
+    for page in pdf.pages:
+        content = page.extract_text()
+        if content:
+            raw_txt += content
+
+    ASTRABD_APP_TOKEN = ASTRABD_APP_TOKEN
+    ASTRADB_ID = ASTRADB_ID
+    HUGGINGFACEHUB_API_TOKEN = HUGGINGFACEHUB_API_TOKEN
+
+    cassio.init(token=ASTRABD_APP_TOKEN, database_id=ASTRADB_ID)
+
+    repo_id = "mistralai/Mistral-7B-Instruct-v0.2"
+    llm = HuggingFaceHub(repo_id=repo_id, huggingfacehub_api_token=HUGGINGFACEHUB_API_TOKEN)
+
+    embeddings = HuggingFaceInferenceAPIEmbeddings(
+        api_key=HUGGINGFACEHUB_API_TOKEN, model_name="sentence-transformers/all-MiniLM-l6-v2"
+    )
+
+    astradb = Cassandra(
+        embedding=embeddings,
+        table_name="QA_Demo",
+        session=None,
+        keyspace=None
+    )
+
+    txt_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=300,
+        chunk_overlap=50,
+        length_function=len
+    )
+
+    text = txt_splitter.split_text(raw_txt)
+
+    astradb.add_texts(text)
+    astra_db_indx = VectorStoreIndexWrapper(vectorstore=astradb)
+
+    return astra_db_indx.query(query_txt, llm=llm)
+
+
+query = input("Write you Query based on context of your image or pdf: ")
+
+
+result = process_pdf_and_search(txt, query)
